@@ -46,14 +46,17 @@ class BacktestEngine:
         with sqlite3.connect(self.db_path) as conn:
             query = "SELECT * FROM daily_prices"
             conditions = []
+            params = []
             if start_date:
-                conditions.append(f"date >= '{start_date}'")
+                conditions.append("date >= ?")
+                params.append(start_date)
             if end_date:
-                conditions.append(f"date <= '{end_date}'")
+                conditions.append("date <= ?")
+                params.append(end_date)
             if conditions:
                 query += " WHERE " + " AND ".join(conditions)
 
-            df = pd.read_sql_query(query, conn)
+            df = pd.read_sql_query(query, conn, params=params)
 
         if df.empty:
             raise ValueError("数据库中没有 daily_prices 数据，请先运行 data_agent 拉取历史数据")

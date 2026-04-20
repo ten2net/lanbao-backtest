@@ -82,8 +82,9 @@ class PaperAccount:
         self._load_state()
 
     def _init_db(self):
-        """初始化数据库表"""
+        """初始化数据库表，启用 WAL 模式提升并发性能"""
         with sqlite3.connect(self.db_path) as conn:
+            conn.execute("PRAGMA journal_mode=WAL;")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS paper_positions (
                     account TEXT,
@@ -154,36 +155,40 @@ class PaperAccount:
             if row:
                 self.cash = row[0]
 
-    def _save_positions(self):
-        """持久化持仓"""
+    def _save_positions(self, conn=None):
+        """持久化持仓；支持传入连接以参与外部事务"""
         now = datetime.now().isoformat()
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute("DELETE FROM paper_positions WHERE account = ?", (self.account_name,))
-            for pos in self.positions.values():
-                conn.execute("""
-                    INSERT INTO paper_positions
-                    (account, code, name, volume, cost_price, entry_date, stop_loss, take_profit, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    self.account_name, pos.code, pos.name, pos.volume,
-                    pos.cost_price, pos.entry_date, pos.stop_loss, pos.take_profit, now
-                ))
-            conn.commit()
-
-    def _save_trade(self, trade: TradeRecord):
-        """持久化成交记录"""
-        now = datetime.now().isoformat()
-        with sqlite3.connect(self.db_path) as conn:
+        if conn is None:
+            with sqlite3.connect(self.db_path) as c:
+                self._save_positions(c)
+            return
+        conn.execute("DELETE FROM paper_positions WHERE account = ?", (self.account_name,))
+        for pos in self.positions.values():
             conn.execute("""
-                INSERT INTO paper_trades
-                (account, date, code, name, action, price, volume, amount, commission, stamp_tax, net_amount, pnl, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO paper_positions
+                (account, code, name, volume, cost_price, entry_date, stop_loss, take_profit, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
-                self.account_name, trade.date, trade.code, trade.name, trade.action,
-                trade.price, trade.volume, trade.amount, trade.commission,
-                trade.stamp_tax, trade.net_amount, trade.pnl, now
+                self.account_name, pos.code, pos.name, pos.volume,
+                pos.cost_price, pos.entry_date, pos.stop_loss, pos.take_profit, now
             ))
-            conn.commit()
+
+    def _save_trade(self, trade: TradeRecord, conn=None):
+        """持久化成交记录；支持传入连接以参与外部事务"""
+        now = datetime.now().isoformat()
+        if conn is None:
+            with sqlite3.connect(self.db_path) as c:
+                self._save_trade(trade, c)
+            return
+        conn.execute("""
+            INSERT INTO paper_trades
+            (account, date, code, name, action, price, volume, amount, commission, stamp_tax, net_amount, pnl, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            self.account_name, trade.date, trade.code, trade.name, trade.action,
+            trade.price, trade.volume, trade.amount, trade.commission,
+            trade.stamp_tax, trade.net_amount, trade.pnl, now
+        ))
 
     def _save_nav(self, date: str, market_value: float):
         """持久化净值记录"""
@@ -267,8 +272,10 @@ class PaperAccount:
             net_amount=-total_cost,
         )
         self.trades.append(trade)
-        self._save_trade(trade)
-        self._save_positions()
+        with sqlite3.connect(self.db_path) as conn:
+            self._save_trade(trade, conn)
+            self._save_positions(conn)
+            conn.commit()
         return trade
 
     def sell(self, date: str, code: str, price: float, volume: Optional[int] = None, action: str = "SELL") -> Optional[TradeRecord]:
@@ -304,8 +311,10 @@ class PaperAccount:
             net_amount=net_income, pnl=pnl,
         )
         self.trades.append(trade)
-        self._save_trade(trade)
-        self._save_positions()
+        with sqlite3.connect(self.db_path) as conn:
+            self._save_trade(trade, conn)
+            self._save_positions(conn)
+            conn.commit()
         return trade
 
     def clear_all(self, date: str, prices: Dict[str, float]) -> List[TradeRecord]:

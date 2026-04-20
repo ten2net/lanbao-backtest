@@ -25,7 +25,7 @@ class BacktestEngine:
         self,
         db_path: str = "/root/lanbao/data/lanbao.db",
         initial_cash: float = 500000.0,
-        hard_stop_loss: float = 0.07,
+        hard_stop_loss: float = 0.05,
     ):
         self.db_path = Path(db_path)
         self.initial_cash = initial_cash

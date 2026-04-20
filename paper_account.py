@@ -217,7 +217,7 @@ class PaperAccount:
         # A股可以买入已有持仓（加仓），这里不做限制，由外部决策控制
         return True
 
-    def buy(self, date: str, code: str, name: str, price: float, target_position_pct: float, hard_stop_loss_pct: float = 0.07) -> Optional[TradeRecord]:
+    def buy(self, date: str, code: str, name: str, price: float, target_position_pct: float, hard_stop_loss_pct: float = 0.05) -> Optional[TradeRecord]:
         """
         买入股票
         - target_position_pct: 目标仓位占比（基于当前总资产）

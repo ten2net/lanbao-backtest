@@ -38,9 +38,9 @@ def test_stop_loss():
         db_path = f.name
     acc = PaperAccount(initial_cash=100000, db_path=db_path)
     acc.reset()
-    acc.buy("2025-04-01", "000001", "平安银行", 10.0, 0.5, hard_stop_loss_pct=0.07)
+    acc.buy("2025-04-01", "000001", "平安银行", 10.0, 0.5, hard_stop_loss_pct=0.05)
     pos = acc.positions["000001"]
-    assert abs(pos.stop_loss - 10.0 * 0.93) < 0.001
+    assert abs(pos.stop_loss - 10.0 * 0.95) < 0.001
 
     # 盘中最低价触发止损
     trades = acc.check_stop_loss("2025-04-02", {"000001": 9.0})

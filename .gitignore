@@ -7,3 +7,4 @@ results/*.json
 results/*.csv
 .env
 *.db
+.claude/state/tool-failure-counter.txt

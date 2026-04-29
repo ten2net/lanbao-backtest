@@ -20,6 +20,7 @@ class Position:
     entry_date: str      # 买入日期
     stop_loss: float = 0.0
     take_profit: float = 0.0
+    high_water_mark: float = 0.0  # 今日最高价（用于移动止损）
 
     def market_value(self, price: float) -> float:
         return self.volume * price
@@ -95,10 +96,16 @@ class PaperAccount:
                     entry_date TEXT,
                     stop_loss REAL,
                     take_profit REAL,
+                    high_water_mark REAL,
                     updated_at TEXT,
                     PRIMARY KEY (account, code)
                 )
             """)
+            # 兼容旧表：添加 high_water_mark 字段
+            try:
+                conn.execute("ALTER TABLE paper_positions ADD COLUMN high_water_mark REAL")
+            except sqlite3.OperationalError:
+                pass  # 字段已存在
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS paper_trades (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -136,15 +143,17 @@ class PaperAccount:
         with sqlite3.connect(self.db_path) as conn:
             # 恢复持仓
             cursor = conn.execute(
-                "SELECT code, name, volume, cost_price, entry_date, stop_loss, take_profit FROM paper_positions WHERE account = ?",
+                "SELECT code, name, volume, cost_price, entry_date, stop_loss, take_profit, high_water_mark FROM paper_positions WHERE account = ?",
                 (self.account_name,)
             )
             for row in cursor:
-                self.positions[row[0]] = Position(
+                pos = Position(
                     code=row[0], name=row[1], volume=row[2],
                     cost_price=row[3], entry_date=row[4],
                     stop_loss=row[5], take_profit=row[6]
                 )
+                pos.high_water_mark = row[7] if row[7] else row[3]
+                self.positions[row[0]] = pos
 
             # 恢复最新现金（从最新的NAV记录）
             cursor = conn.execute(
@@ -166,11 +175,12 @@ class PaperAccount:
         for pos in self.positions.values():
             conn.execute("""
                 INSERT INTO paper_positions
-                (account, code, name, volume, cost_price, entry_date, stop_loss, take_profit, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (account, code, name, volume, cost_price, entry_date, stop_loss, take_profit, high_water_mark, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 self.account_name, pos.code, pos.name, pos.volume,
-                pos.cost_price, pos.entry_date, pos.stop_loss, pos.take_profit, now
+                pos.cost_price, pos.entry_date, pos.stop_loss, pos.take_profit,
+                pos.high_water_mark if pos.high_water_mark else pos.cost_price, now
             ))
 
     def _save_trade(self, trade: TradeRecord, conn=None):
@@ -339,6 +349,41 @@ class PaperAccount:
                 if trade:
                     trades.append(trade)
         return trades
+
+    def update_high_water_mark(self, prices: Dict[str, float]):
+        """更新持仓最高价（用于移动止损）"""
+        for code, pos in self.positions.items():
+            current_price = prices.get(code, 0)
+            if current_price > 0:
+                if pos.high_water_mark <= 0:
+                    pos.high_water_mark = max(pos.cost_price, current_price)
+                else:
+                    pos.high_water_mark = max(pos.high_water_mark, current_price)
+        self._save_positions()
+
+    def check_trailing_stop(self, prices: Dict[str, float], trailing_stop_pct: float = 0.05) -> List[Dict]:
+        """检查移动止损（回撤触发预警，不自动卖出）
+
+        Returns:
+            触发预警的持仓列表（每条包含 code, name, current_price, high_water_mark, drawdown_pct）
+        """
+        alerts = []
+        for code, pos in self.positions.items():
+            current_price = prices.get(code, 0)
+            if current_price <= 0 or pos.high_water_mark <= 0:
+                continue
+            threshold = pos.high_water_mark * (1 - trailing_stop_pct)
+            if current_price <= threshold:
+                drawdown_pct = (pos.high_water_mark - current_price) / pos.high_water_mark
+                alerts.append({
+                    "code": code,
+                    "name": pos.name,
+                    "current_price": current_price,
+                    "high_water_mark": pos.high_water_mark,
+                    "drawdown_pct": round(drawdown_pct, 4),
+                    "threshold": round(threshold, 2),
+                })
+        return alerts
 
     def total_value(self, prices: Dict[str, float]) -> float:
         """计算总资产"""
